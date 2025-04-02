@@ -6,24 +6,31 @@ Created on Tue Mar 25 12:37:22 2025
 """
 
 import gurobipy as grb
+import time
+import pandas as pd
+from datetime import datetime
+
+
 
 def unit_commitment_rt(data):
     # Create a Gurobi model
     m = grb.Model("Unit Commitment RT")
-    
+    m.setParam('MIPGap', 0.0)
+
+
     # Unpack the data
     generators = data['generators']
     demand = data['demand']
-    T = len(demand) # Number of time periods
+    T = len(demand)  # Number of time periods
     I = len(generators)  # Number of generators
-    
+
     # Decision variables
     P = {}
     u = {}
     v = {}
     w = {}
     s = {}
-    
+
     # Create variables for each generator at each time t
     for i in range(I):
         # Create u_{it} for t = 0
@@ -33,78 +40,119 @@ def unit_commitment_rt(data):
             u[i, t] = m.addVar(vtype=grb.GRB.BINARY, name=f"u_{i}_{t}")
             v[i, t] = m.addVar(vtype=grb.GRB.BINARY, name=f"v_{i}_{t}")
             w[i, t] = m.addVar(vtype=grb.GRB.BINARY, name=f"w_{i}_{t}")
-    
+
     # Excess energy variables
     for t in range(T):
         s[t] = m.addVar(lb=0, name=f"s_{t}")
-    
+
     # Set objective function (minimize costs)
     obj = grb.quicksum(generators[i]['Variable Cost'] * P[i, t] +
                        generators[i]['No_load Cost'] * u[i, t] +
                        generators[i]['Startup Cost'] * v[i, t]
                        for i in range(I) for t in range(T)) + \
-          grb.quicksum(data['lambda'] * s[t] for t in range(T))
-    
+        grb.quicksum(data['lambda'] * s[t] for t in range(T))
+
     m.setObjective(obj, grb.GRB.MINIMIZE)
-    
+
     # Power balance constraint
     for t in range(T):
-        m.addConstr(grb.quicksum(P[i, t] for i in range(I)) >= demand[t], name=f"PowerBalance_{t}")
-        
+        m.addConstr(grb.quicksum(P[i, t] for i in range(
+            I)) >= demand[t], name=f"PowerBalance_{t}")
+
     # Definition excess capactity
     for t in range(T):
-        m.addConstr(s[t] == grb.quicksum(P[i, t] for i in range(I)) - data['demand'][t], name=f"excess_energy_{t}")
-    
+        m.addConstr(s[t] == grb.quicksum(P[i, t] for i in range(
+            I)) - data['demand'][t], name=f"excess_energy_{t}")
+
     # Generator capacity constraints
     for i in range(I):
         for t in range(T):
-            m.addConstr(generators[i]['Min Capacity'] * u[i, t] <= P[i, t], name=f"MinCapacity_{i}_{t}")
-            m.addConstr(P[i, t] <= generators[i]['Max Capacity'] * u[i, t], name=f"MaxCapacity_{i}_{t}")
-    
+            m.addConstr(generators[i]['Min Capacity'] * u[i, t]
+                        <= P[i, t], name=f"MinCapacity_{i}_{t}")
+            m.addConstr(P[i, t] <= generators[i]['Max Capacity']
+                        * u[i, t], name=f"MaxCapacity_{i}_{t}")
+
     # Initial conditions
     for i in range(I):
-        alfa = generators[i]['Min Downtime'] - generators[i]['Initial_Off_Time']
+        alfa = generators[i]['Min Downtime'] - \
+            generators[i]['Initial_Off_Time']
         beta = generators[i]['Min Uptime'] - generators[i]['Initial_On_Time']
-        if alfa > 0 and generators[i]['Initial_Off_Time']>0:
+        if alfa > 0 and generators[i]['Initial_Off_Time'] > 0:
             for t in range(alfa):
                 m.addConstr(u[i, t] == 0, name=f"InitialOn_{i}")
-        
+
         if beta > 0 and generators[i]['Initial_On_Time'] > 0:
             for t in range(beta):
                 m.addConstr(u[i, t] == 1, name=f"InitialOff_{i}")
-    
+
     # Initialize u_{i,0}
     for i in range(I):
         if generators[i]['Initial_On_Time'] > 0:
-            m.addConstr(u[i, -1] == 1, name = "t = 0 Initialization")
+            m.addConstr(u[i, -1] == 1, name="t = 0 Initialization")
         else:
-            m.addConstr(u[i, -1] == 0, name = "t = 0 Initialization")
-            
+            m.addConstr(u[i, -1] == 0, name="t = 0 Initialization")
+
     # RT constraints for unit start-up and shut-down
     for i in range(I):
         for t in range(T):
-            m.addConstr(u[i, t] - u[i, t - 1] == v[i, t] - w[i, t], name=f"RT1_{i}_{t}")
-            
-    
+            m.addConstr(u[i, t] - u[i, t - 1] == v[i, t] -
+                        w[i, t], name=f"RT1_{i}_{t}")
+
     # Uptime and Downtime constraints (RT)
     for i in range(I):
         Li = generators[i]['Min Uptime']
-        li =generators[i]['Min Downtime']
-        
+        li = generators[i]['Min Downtime']
+
         for t in range(1, Li):
-            m.addConstr(grb.quicksum(v[i, tau] for tau in range(0, t)) <= u[i, t], name=f"Uptime_{i}_{t}")
+            m.addConstr(grb.quicksum(v[i, tau] for tau in range(
+                0, t)) <= u[i, t], name=f"Uptime_{i}_{t}")
         for t in range(Li, T):
-            m.addConstr(grb.quicksum(v[i, tau] for tau in range(t - Li +1, t)) <= u[i, t], name=f"Uptime_{i}_{t}")
-            
+            m.addConstr(grb.quicksum(v[i, tau] for tau in range(
+                t - Li+1, t+1)) <= u[i, t], name=f"Uptime_{i}_{t}")
+
         for t in range(1, li):
-            m.addConstr(grb.quicksum(w[i, tau] for tau in range(0, t)) <= 1 - u[i, t], name=f"Uptime_{i}_{t}")
+            m.addConstr(grb.quicksum(w[i, tau] for tau in range(
+                0, t)) <= 1 - u[i, t], name=f"Uptime_{i}_{t}")
         for t in range(li, T):
-            m.addConstr(grb.quicksum(v[i, tau] for tau in range(t - li+1, t)) <= 1 - u[i, t - li], name=f"Downtime_{i}_{t}")
-    
+            m.addConstr(grb.quicksum(v[i, tau] for tau in range(
+                t - li+1, t+1)) <= 1 - u[i, t - li], name=f"Downtime_{i}_{t}")
+
     # Optimize the model
     m.optimize()
     
+    
     # Print the solution
+    if m.status == grb.GRB.OPTIMAL:
+        # Collect results
+        results = []
+        for i in range(I):
+            for t in range(T):
+                results.append({
+                    'Generator': f'G{i+1}',
+                    'Time': t+1,
+                    'Power': P[i, t].x,
+                    'u': u[i, t].x,
+                    'v': v[i, t].x,
+                    'w': w[i, t].x
+                })
+
+        excess_results = [{'Time': t+1, 'Excess_Energy': s[t].x} for t in range(T)]
+
+        df_gen = pd.DataFrame(results)
+        df_excess = pd.DataFrame(excess_results)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = f'C:/Users/Fardeen/Desktop/Results/unit_commitment_results_RT_{timestamp}.xlsx'
+        with pd.ExcelWriter(output_path) as writer:
+            df_gen.to_excel(writer, index=False, sheet_name='Generator Results')
+            df_excess.to_excel(writer, index=False, sheet_name='Excess Energy')
+            pd.DataFrame({'Objective Value': [m.objVal]}).to_excel(writer, index=False, sheet_name='Summary')
+        
+        print(f"Results exported to {output_path}")
+    else:
+        print("No optimal solution found.")
+    """
+    
     if m.status == grb.GRB.OPTIMAL:
         print("Optimal Objective Value:", m.objVal)
         for i in range(I):
@@ -115,24 +163,28 @@ def unit_commitment_rt(data):
             print(f"s_{t+1}: {s[t].x}")
     else:
         print("No optimal solution found.")
+    """
+
 
 def unit_commitment_tkw(data):
     # Create a Gurobi model
     m = grb.Model("Unit Commitment TKW")
-    
+    m.setParam('MIPGap', 0.0)
+
+
     # Unpack the data
     generators = data['generators']
     demand = data['demand']
-    T = len(demand) # Number of time periods
+    T = len(demand)  # Number of time periods
     I = len(generators)  # Number of generators
-    
+
     # Decision variables
     P = {}
     u = {}
     v = {}
     w = {}
     s = {}
-    
+
     # Create variables for each generator at each time t
     for i in range(I):
         # Create u_{it} for t = 0
@@ -142,94 +194,126 @@ def unit_commitment_tkw(data):
             u[i, t] = m.addVar(vtype=grb.GRB.BINARY, name=f"u_{i}_{t}")
             v[i, t] = m.addVar(vtype=grb.GRB.BINARY, name=f"v_{i}_{t}")
             w[i, t] = m.addVar(vtype=grb.GRB.BINARY, name=f"w_{i}_{t}")
-    
+
     # Excess energy variables
     for t in range(T):
         s[t] = m.addVar(lb=0, name=f"s_{t}")
-    
+
     # Set objective function (minimize costs)
     obj = grb.quicksum(generators[i]['Variable Cost'] * P[i, t] +
                        generators[i]['No_load Cost'] * u[i, t] +
                        generators[i]['Startup Cost'] * v[i, t]
                        for i in range(I) for t in range(T)) + \
-          grb.quicksum(data['lambda'] * s[t] for t in range(T))
-    
+        grb.quicksum(data['lambda'] * s[t] for t in range(T))
+
     m.setObjective(obj, grb.GRB.MINIMIZE)
-    
+
     # Power balance constraint
     for t in range(T):
-        m.addConstr(grb.quicksum(P[i, t] for i in range(I)) >= demand[t], name=f"PowerBalance_{t}")
-        
+        m.addConstr(grb.quicksum(P[i, t] for i in range(
+            I)) >= demand[t], name=f"PowerBalance_{t}")
+
     # Definition excess capactity
     for t in range(T):
-        m.addConstr(s[t] == grb.quicksum(P[i, t] for i in range(I)) - data['demand'][t], name=f"excess_energy_{t}")
-    
+        m.addConstr(s[t] == grb.quicksum(P[i, t] for i in range(
+            I)) - data['demand'][t], name=f"excess_energy_{t}")
+
     # Generator capacity constraints
     for i in range(I):
         for t in range(T):
-            m.addConstr(generators[i]['Min Capacity'] * u[i, t] <= P[i, t], name=f"MinCapacity_{i}_{t}")
-            m.addConstr(P[i, t] <= generators[i]['Max Capacity'] * u[i, t], name=f"MaxCapacity_{i}_{t}")
-    
+            m.addConstr(generators[i]['Min Capacity'] * u[i, t]
+                        <= P[i, t], name=f"MinCapacity_{i}_{t}")
+            m.addConstr(P[i, t] <= generators[i]['Max Capacity']
+                        * u[i, t], name=f"MaxCapacity_{i}_{t}")
+
     # Initial conditions
     for i in range(I):
-        alfa = generators[i]['Min Downtime'] - generators[i]['Initial_Off_Time']
+        alfa = generators[i]['Min Downtime'] - \
+            generators[i]['Initial_Off_Time']
         beta = generators[i]['Min Uptime'] - generators[i]['Initial_On_Time']
-        if alfa > 0 and generators[i]['Initial_Off_Time']>0:
+        if alfa > 0 and generators[i]['Initial_Off_Time'] > 0:
             for t in range(alfa):
                 m.addConstr(u[i, t] == 0, name=f"InitialOn_{i}")
-        
+
         if beta > 0 and generators[i]['Initial_On_Time'] > 0:
             for t in range(beta):
                 m.addConstr(u[i, t] == 1, name=f"InitialOff_{i}")
-    
+
     # Initialize u_{i,0}
     for i in range(I):
         if generators[i]['Initial_On_Time'] > 0:
-            m.addConstr(u[i, -1] == 1, name = "t = 0 Initialization")
+            m.addConstr(u[i, -1] == 1, name="t = 0 Initialization")
         else:
-            m.addConstr(u[i, -1] == 0, name = "t = 0 Initialization")
-    
+            m.addConstr(u[i, -1] == 0, name="t = 0 Initialization")
 
     # Constraints for unit start-up and shut-down
     for i in range(I):
         for t in range(T):
-            m.addConstr(u[i, t] - u[i, t - 1] == v[i, t] - w[i, t], name=f"RT1_{i}_{t}")
-        
+            m.addConstr(u[i, t] - u[i, t - 1] == v[i, t] -
+                        w[i, t], name=f"RT1_{i}_{t}")
+
     # TKW constraints for unit start-up and shut-down
     for i in range(I):
-        
-        for tau in range(1, min(generators[i]['Min Uptime'], T)):
+        for tau in range(1,min(generators[i]['Min Uptime']-1, T)):
             m.addConstr(u[i, 0] <= u[i, tau], name=f"TKW_1_{i}_{t}")
-            
-        for t in range(1,T):
+
+        for t in range(T):
             for tau in range(t+1, min(t+generators[i]['Min Uptime'], T)):
-                if tau <= T:
-                    m.addConstr(u[i, t] - u[i, t - 1] <= u[i, tau], name=f"TKW_1_{i}_{t}")
-                
+                m.addConstr(u[i, t] - u[i, t - 1] <=u[i, tau], name=f"TKW_1_{i}_{t}")
+
     for i in range(I):
-        for tau in range(1, min(generators[i]['Min Downtime'], T)):
-            m.addConstr(- u[i, 0] <= 1 - u[i, tau], name=f"TKW_2_{i}_{t}")            
-        for t in range(1,T):
+        for tau in range(1,min(generators[i]['Min Downtime']-1, T)):
+            m.addConstr(- u[i, 0] <= 1 - u[i, tau], name=f"TKW_2_{i}_{t}")
+        for t in range(T):
             for tau in range(t+1, min(t+generators[i]['Min Downtime'], T)):
-                if tau <= T:
-                    m.addConstr(u[i, t - 1] - u[i, t] <= 1 - u[i, tau], name=f"TKW_2_{i}_{t}")
-                    
+                m.addConstr(u[i, t - 1] - u[i, t] <= 1 - u[i, tau], name=f"TKW_2_{i}_{t}")
+
     # Optimize the model
     m.optimize()
-    
+
     # Print the solution
+    
+    if m.status == grb.GRB.OPTIMAL:
+        # Collect results
+        results = []
+        for i in range(I):
+            for t in range(T):
+                results.append({
+                    'Generator': f'G{i+1}',
+                    'Time': t+1,
+                    'Power': P[i, t].x,
+                    'u': u[i, t].x,
+                    'v': v[i, t].x,
+                    'w': w[i, t].x
+                })
+
+        excess_results = [{'Time': t+1, 'Excess_Energy': s[t].x} for t in range(T)]
+
+        df_gen = pd.DataFrame(results)
+        df_excess = pd.DataFrame(excess_results)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = f'C:/Users/Fardeen/Desktop/Results/unit_commitment_results_TKW_{timestamp}.xlsx'
+        with pd.ExcelWriter(output_path) as writer:
+            df_gen.to_excel(writer, index=False, sheet_name='Generator Results')
+            df_excess.to_excel(writer, index=False, sheet_name='Excess Energy')
+            pd.DataFrame({'Objective Value': [m.objVal]}).to_excel(writer, index=False, sheet_name='Summary')
+        
+        print(f"Results exported to {output_path}")
+    else:
+        print("No optimal solution found.")
+        """
     if m.status == grb.GRB.OPTIMAL:
         print("Optimal Objective Value:", m.objVal)
         for i in range(I):
-            print(f"Generation {i+1} at time 0:  u = {u[i,-1].x}")
             for t in range(T):
                 print(f"Generator {i+1} at time {t+1}: P = {P[i,t].x}, u = {u[i,t].x}, v = {v[i,t].x}, w = {w[i,t].x}")
         
         for t in range(T):
             print(f"s_{t+1}: {s[t].x}")
-        
     else:
         print("No optimal solution found.")
+    """
 
 # Small example 1
 data1 = {
@@ -242,10 +326,6 @@ data1 = {
     'demand': [200, 90,90,90,140],
     'lambda': 10  # Penalty for excess production
 }
-
-# Call the functions
-#unit_commitment_rt(data1)
-#unit_commitment_tkw(data1)
 
 
 # Small example 2
@@ -262,6 +342,121 @@ data2 = {
     'lambda': 10  # Penalty for excess production
 }
 
-unit_commitment_rt(data2)
-unit_commitment_tkw(data2)
 
+#unit_commitment_rt(data2)
+
+"""
+N = 10000
+avg_1_RT =0.0
+avg_2_RT =0.0
+avg_1_TKW =0.0
+avg_2_TKW =0.0
+
+for i in range(N):
+    time1 = time.time()
+    unit_commitment_rt(data1)
+    time2 = time.time()
+    unit_commitment_tkw(data1)
+    time3 = time.time()
+
+    time4 = time.time()
+    unit_commitment_rt(data2)
+    time5 = time.time()
+    unit_commitment_tkw(data2)
+    time6 = time.time()
+    
+    avg_1_RT += (time2 - time1)
+    avg_1_TKW += (time3-time2)
+    avg_2_RT += (time5-time4)
+    avg_2_TKW += (time6-time5)
+
+print("\nSimple example 1\n")
+print("RT-formulation time: " + str(avg_1_RT/N))
+print("TKW-formulation time: " + str(avg_1_TKW/N))
+
+print("\nSimple example 2\n")
+print("RT-formulation time: " + str(avg_2_RT/N))
+print("TKW-formulation time: " + str(avg_2_TKW/N))
+"""
+
+test_data = {
+    'generators': [
+        {
+            'Min Capacity': 10,
+            'Max Capacity': 50,
+            'Variable Cost': 5,
+            'No_load Cost': 10,
+            'Startup Cost': 100,
+            'Min Uptime': 2,
+            'Min Downtime': 2,
+            'Initial_On_Time': 1,     
+            'Initial_Off_Time': 0      
+        }
+    ],
+    'demand': [40, 0, 0],       
+    'lambda': 500          
+}
+
+#unit_commitment_rt(data1)
+#unit_commitment_tkw(data1)
+#unit_commitment_rt(data2)
+#unit_commitment_tkw(data2)
+#unit_commitment_rt(test_data)
+#unit_commitment_tkw(test_data)
+
+
+############################
+#
+# Assignment Part 4
+#
+############################
+
+
+# Initialization
+
+lamba = 1
+alfa = 0.5
+
+# Read file
+df = pd.read_excel(
+    'C:/Users/Fardeen/Desktop/Realistic Data Demand.xlsx', engine='openpyxl')
+
+time = df['Time Period']
+demand = df['Demand']
+scen1 = df['Renewable Scenario 1']
+scen2 = df['Renewable Scenario 2']
+scen3 = df['Renewable Scenario 3']
+scen4 = df['Renewable Scenario 4']
+scen5 = df['Renewable Scenario 5']
+
+adjusted_demand = demand - alfa * scen1
+
+df = pd.read_excel("C:/Users/Fardeen/Desktop/Realistic Data Generators.xlsx",
+                   engine='openpyxl')
+df = df.rename(columns={
+    'Minimum Uptime': 'Min Uptime',
+    'Minimum Downtime': 'Min Downtime',
+    'Initial_On_Time (U_1)': 'Initial_On_Time',
+    'Initial_Off_Time (U_0)': 'Initial_Off_Time',
+    'Min Capacity': 'Min Capacity',
+    'Max Capacity': 'Max Capacity',
+    'Startup Cost': 'Startup Cost',
+    'No_load Cost': 'No_load Cost',
+    'Variable Cost': 'Variable Cost'
+})
+
+generator_data = df[[
+    'Min Uptime', 'Min Downtime', 'Initial_On_Time', 'Initial_Off_Time',
+    'Min Capacity', 'Max Capacity', 'Startup Cost', 'No_load Cost', 'Variable Cost'
+]]
+
+generators = generator_data.to_dict(orient='records')
+
+realistic_data = {
+    'generators': generators,
+    'demand': adjusted_demand.tolist(),
+    'lambda': lamba
+}
+
+unit_commitment_rt(realistic_data)
+unit_commitment_tkw(realistic_data)
