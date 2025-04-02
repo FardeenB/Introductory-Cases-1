@@ -87,20 +87,19 @@ def unit_commitment_rt(data):
             
     
     # Uptime and Downtime constraints (RT)
-    
     for i in range(I):
         Li = generators[i]['Min Uptime']
         li =generators[i]['Min Downtime']
         
-        for t in range(Li):
-            m.addConstr(grb.quicksum(v[i, tau] for tau in range(0,t)) <= u[i, t], name=f"Uptime_{i}_{t}")
+        for t in range(1, Li):
+            m.addConstr(grb.quicksum(v[i, tau] for tau in range(0, t)) <= u[i, t], name=f"Uptime_{i}_{t}")
         for t in range(Li, T):
-            m.addConstr(grb.quicksum(v[i, tau] for tau in range(t - Li, t)) <= u[i, t], name=f"Uptime_{i}_{t}")
-        
-        for t in range(li):
-            m.addConstr(grb.quicksum(w[i, tau] for tau in range(0,t)) <= 1 - u[i, t], name=f"Downtime_{i}_{t}")
+            m.addConstr(grb.quicksum(v[i, tau] for tau in range(t - Li +1, t)) <= u[i, t], name=f"Uptime_{i}_{t}")
+            
+        for t in range(1, li):
+            m.addConstr(grb.quicksum(w[i, tau] for tau in range(0, t)) <= 1 - u[i, t], name=f"Uptime_{i}_{t}")
         for t in range(li, T):
-            m.addConstr(grb.quicksum(v[i, tau] for tau in range(t - li, t)) <= 1 - u[i, t - li], name=f"Downtime_{i}_{t}")
+            m.addConstr(grb.quicksum(v[i, tau] for tau in range(t - li+1, t)) <= 1 - u[i, t - li], name=f"Downtime_{i}_{t}")
     
     # Optimize the model
     m.optimize()
@@ -245,7 +244,7 @@ data1 = {
 }
 
 # Call the functions
-unit_commitment_rt(data1)
+#unit_commitment_rt(data1)
 #unit_commitment_tkw(data1)
 
 
@@ -256,13 +255,13 @@ data2 = {
     'generators': [
         {'Min Uptime': 3, 'Min Downtime': 2, 'Initial_On_Time': 1, 'Initial_Off_Time': 0, 
          'Min Capacity': 20, 'Max Capacity': 100, 'Startup Cost': 100, 'No_load Cost': 50, 'Variable Cost': 10},
-        {'Min Uptime': 2, 'Min Downtime': 4, 'Initial_On_Time': 0, 'Initial_Off_Time': 2, 
+        {'Min Uptime': 2, 'Min Downtime': 3, 'Initial_On_Time': 0, 'Initial_Off_Time': 2, 
          'Min Capacity': 30, 'Max Capacity': 120, 'Startup Cost': 120, 'No_load Cost': 60, 'Variable Cost': 8},
     ],
     'demand': [100, 90, 140, 160, 140],
     'lambda': 10  # Penalty for excess production
 }
 
-#unit_commitment_rt(data2)
-#unit_commitment_tkw(data2)
+unit_commitment_rt(data2)
+unit_commitment_tkw(data2)
 
